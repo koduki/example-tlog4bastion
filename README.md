@@ -53,11 +53,8 @@ sudo ./deploy.sh
 - スクリプトの配置 (`/usr/local/bin/`)
 - `sshd_config` への `ForceCommand` 適用
 - ログ用一時ディレクトリの作成と権限設定 (`1733` スティッキービット)
-
-### 4. 設定の反映
-```bash
-sudo systemctl restart sshd
-```
+- `sshd -t` による設定ファイルのバリデーション
+- `sshd` の自動再起動
 
 ---
 
@@ -89,7 +86,8 @@ gsutil cp /var/log/tlog-sessions/*.log gs://YOUR_BUCKET_NAME/retry/ && rm -f /va
 ### ログイン直後にセッションが終了する
 - `tlog` がインストールされているか確認してください。
 - インスタンスのアクセススコープが「読み書き」以上になっているか確認してください。
-- `/var/log/tlog-sessions/error.log` または `journalctl -t tlog-gcs-uploader` でエラー内容を確認してください。
+- `journalctl -t tlog-gcs-uploader -p err` でエラー内容を確認してください。
+- デバッグログを確認する場合は `journalctl -t tlog-gcs-uploader -p debug` を使用してください。
 
 ### GCS へのアップロードが失敗する
 - `gsutil cp` を手動で実行し、エラーメッセージを確認してください。
