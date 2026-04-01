@@ -1,0 +1,75 @@
+#!/bin/bash
+# /usr/local/bin/tlog-gcs-uploader.sh
+
+# =================================================================
+# 1. 構成設定
+# =================================================================
+GCS_BUCKET="gs://gcs-example-tlog001"
+LOCAL_TMP_DIR="/var/log/tlog-sessions"
+ERROR_LOG="/var/log/tlog-error.log"
+INSTANCE_NAME=$(hostname)
+USER_NAME=${USER:-$(whoami)}
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+SESSION_ID=${PPID}
+LOG_FILE="${LOCAL_TMP_DIR}/${USER_NAME}_${TIMESTAMP}_${SESSION_ID}.log"
+
+# エラー出力用関数の定義
+log_error() {
+    local message="$1"
+    local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+    # ローカルファイルとsyslogの両方に出力
+    echo "[${timestamp}] ERROR: ${message}" >> "${ERROR_LOG}"
+    logger -t tlog-gcs-uploader "ERROR: ${message}"
+}
+
+# =================================================================
+# 2. 事前準備
+# =================================================================
+if; then
+    mkdir -p "${LOCAL_TMP_DIR}"
+    chmod 1733 "${LOCAL_TMP_DIR}" # スティッキービットを立て、他人のログを消せないようにする
+fi
+
+# =================================================================
+# 3. アップロード処理 (EXIT時に実行)
+# =================================================================
+cleanup_and_upload() {
+    if [ -f "${LOG_FILE}" ]; then
+        # ファイルが空でないことを確認
+        if [ -s "${LOG_FILE}" ]; then
+            # GCSへの転送を試行
+            /usr/bin/gcloud storage cp "${LOG_FILE}" "${GCS_BUCKET}/${USER_NAME}/" > /dev/null 2>&1
+            
+            if [ $? -eq 0 ]; then
+                # 成功した場合は一時ファイルを削除
+                rm -f "${LOG_FILE}"
+            else
+                log_error "GCS upload failed for ${LOG_FILE}. File preserved locally."
+            fi
+        else
+            rm -f "${LOG_FILE}"
+        fi
+    fi
+}
+
+# 終了シグナルをトラップ
+trap cleanup_and_upload EXIT
+
+# =================================================================
+# 4. セッション記録の開始
+# =================================================================
+# 本来のシェルの特定
+REAL_SHELL=$(getent passwd "${USER_NAME}" | cut -d: -f7)
+ && REAL_SHELL="/bin/bash"
+
+# 非対話型実行(scp等)の考慮
+if; then
+    # scpやrsync等の場合は記録せずに直接実行（バイナリデータの破損を防ぐため）
+    # 必要に応じて、ここをtlog-rec -cに変更することも可能だが注意が必要
+    exec "${REAL_SHELL}" -c "${SSH_ORIGINAL_COMMAND}"
+else
+    # 対話型セッションの記録
+    # --writer=file を指定し、直接ローカルファイルに書き出す
+    /usr/bin/tlog-rec --writer=file --file-path="${LOG_FILE}" -- "${REAL_SHELL}" -l
+fi
+
