@@ -13,67 +13,95 @@ TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 SESSION_ID=${PPID}
 LOG_FILE="${LOCAL_TMP_DIR}/${USER_NAME}_${TIMESTAMP}_${SESSION_ID}.log"
 
-# エラー出力用関数の定義
+# =================================================================
+# 2. ログ出力関数
+#    journalctl -t tlog-gcs-uploader -f  でリアルタイム確認できる
+# =================================================================
+log_info() {
+    local message="$1"
+    local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+    echo "[${timestamp}] INFO:  [PID=$$] ${message}" >> "${ERROR_LOG}"
+    logger -t tlog-gcs-uploader "INFO: [user=${USER_NAME}] [pid=$$] ${message}"
+}
+
 log_error() {
     local message="$1"
     local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
-    # ローカルファイルとsyslogの両方に出力
-    echo "[${timestamp}] ERROR: ${message}" >> "${ERROR_LOG}"
-    logger -t tlog-gcs-uploader "ERROR: ${message}"
+    echo "[${timestamp}] ERROR: [PID=$$] ${message}" >> "${ERROR_LOG}"
+    logger -t tlog-gcs-uploader "ERROR: [user=${USER_NAME}] [pid=$$] ${message}"
 }
 
 # =================================================================
-# 2. 事前準備
+# 3. 事前準備
 # =================================================================
 if [ ! -d "${LOCAL_TMP_DIR}" ]; then
     mkdir -p "${LOCAL_TMP_DIR}"
-    chmod 1733 "${LOCAL_TMP_DIR}" # スティッキービットを立て、他人のログを消せないようにする
+    chmod 1733 "${LOCAL_TMP_DIR}"
 fi
 
+log_info "Session started. log_file=${LOG_FILE}"
+
 # =================================================================
-# 3. アップロード処理
+# 4. アップロード処理（シグナル受信時 or EXIT 時に呼ばれる）
 # =================================================================
 cleanup_and_upload() {
-    # すでに処理中の場合は重複実行を避ける
-    if [ "${UP_PROCESSING}" = "true" ]; then return; fi
+    local signal="${1:-EXIT}"
+
+    # 重複実行防止
+    if [ "${UP_PROCESSING}" = "true" ]; then
+        log_info "cleanup_and_upload: already in progress, skipping. (signal=${signal})"
+        return
+    fi
     export UP_PROCESSING="true"
 
-    # ★ここが重要:
-    # SIGHUP/SIGTERMのハンドラ内では、子プロセス(gsutil)にも同じシグナルが
-    # 届いてアップロードが中断されてしまう。
-    # ハンドラ内でシグナルを無視することでgsutilを保護する。
-    trap '' HUP TERM
+    log_info "cleanup_and_upload: triggered by signal=${signal}"
 
-    if [ -f "${LOG_FILE}" ] && [ -s "${LOG_FILE}" ]; then
-        /usr/bin/gsutil cp "${LOG_FILE}" "${GCS_BUCKET}/${USER_NAME}/" > /dev/null 2>&1
-        if [ $? -eq 0 ]; then
+    # ハンドラ内でシグナルを無視 → gsutil が途中で殺されるのを防ぐ
+    trap '' HUP TERM
+    log_info "cleanup_and_upload: HUP/TERM signals suppressed for upload"
+
+    if [ ! -f "${LOG_FILE}" ]; then
+        log_info "cleanup_and_upload: log file not found: ${LOG_FILE}"
+        return
+    fi
+
+    local filesize
+    filesize=$(stat -c%s "${LOG_FILE}" 2>/dev/null || echo "unknown")
+    log_info "cleanup_and_upload: log file exists. size=${filesize} bytes"
+
+    if [ -s "${LOG_FILE}" ]; then
+        log_info "cleanup_and_upload: starting gsutil upload to ${GCS_BUCKET}/${USER_NAME}/"
+        GCLOUD_OUT=$(/usr/bin/gsutil cp "${LOG_FILE}" "${GCS_BUCKET}/${USER_NAME}/" 2>&1)
+        local exit_code=$?
+        if [ ${exit_code} -eq 0 ]; then
+            log_info "cleanup_and_upload: upload SUCCESS. removing local file."
             rm -f "${LOG_FILE}"
         else
-            log_error "GCS upload failed on exit for ${LOG_FILE}"
+            log_error "cleanup_and_upload: upload FAILED (exit_code=${exit_code}). output=${GCLOUD_OUT}"
         fi
     else
+        log_info "cleanup_and_upload: log file is empty, removing without upload."
         rm -f "${LOG_FILE}"
     fi
 }
 
-# セッション切断(SIGHUP)・強制終了(SIGTERM)・通常終了(EXIT)をすべて検知してアップロード
-trap cleanup_and_upload EXIT HUP TERM
+# シグナルごとに引数を渡してトリガー元を記録する
+trap 'cleanup_and_upload HUP'  HUP
+trap 'cleanup_and_upload TERM' TERM
+trap 'cleanup_and_upload EXIT' EXIT
 
 # =================================================================
-# 4. セッション記録の開始
+# 5. セッション記録の開始
 # =================================================================
-
-# 本来のシェルの特定
 REAL_SHELL=$(getent passwd "${USER_NAME}" | cut -d: -f7)
 [ -z "${REAL_SHELL}" ] && REAL_SHELL="/bin/bash"
+log_info "real_shell=${REAL_SHELL}"
 
-# 非対話型実行(scp等)の考慮
 if [ -n "${SSH_ORIGINAL_COMMAND}" ]; then
-    # scpやrsync等の場合は記録せずに直接実行
+    log_info "non-interactive command detected: ${SSH_ORIGINAL_COMMAND}. executing directly."
     exec "${REAL_SHELL}" -c "${SSH_ORIGINAL_COMMAND}"
 else
-    # 対話型セッションの記録
-    # tlog-rec終了後、trapによりcleanup_and_uploadが実行される
+    log_info "starting tlog-rec for interactive session."
     /usr/bin/tlog-rec --writer=file --file-path="${LOG_FILE}" -- "${REAL_SHELL}" -l
+    log_info "tlog-rec exited with code=$?"
 fi
-
