@@ -117,8 +117,11 @@ PrintMotd no
 #TCPKeepAlive yes
 #PermitUserEnvironment no
 #Compression delayed
-ClientAliveInterval 420
-#ClientAliveCountMax 3
+# 切断を素早く検知するための設定（デフォルトの420秒では最大21分かかる）
+# ClientAliveInterval(秒) × ClientAliveCountMax = SIGHUP送信までの最大時間
+# 15秒 × 3回 = 最大45秒で切断検知 → SIGHUP発火 → ログ転送 へ
+ClientAliveInterval 15
+ClientAliveCountMax 3
 #UseDNS no
 #PidFile /var/run/sshd.pid
 #MaxStartups 10:30:100
