@@ -4,7 +4,7 @@
 # =================================================================
 # 1. 構成設定
 # =================================================================
-GCS_BUCKET="gs://gcs-example-tlog001"
+GCS_BUCKET="gs://YOUR_BUCKET_NAME" # ログ保存先のGCSバケット名に変更してください
 LOCAL_TMP_DIR="/var/log/tlog-sessions"
 ERROR_LOG="/var/log/tlog-error.log"
 INSTANCE_NAME=$(hostname)
@@ -37,14 +37,14 @@ cleanup_and_upload() {
     if [ -f "${LOG_FILE}" ]; then
         # ファイルが空でないことを確認
         if [ -s "${LOG_FILE}" ]; then
-            # GCSへの転送を試行
-            /usr/bin/gcloud storage cp "${LOG_FILE}" "${GCS_BUCKET}/${USER_NAME}/" > /dev/null 2>&1
+            # GCSへの転送を試行（より安定している gsutil を使用）
+            GCLOUD_OUT=$(/usr/bin/gsutil cp "${LOG_FILE}" "${GCS_BUCKET}/${USER_NAME}/" 2>&1)
             
             if [ $? -eq 0 ]; then
                 # 成功した場合は一時ファイルを削除
                 rm -f "${LOG_FILE}"
             else
-                log_error "GCS upload failed for ${LOG_FILE}. File preserved locally."
+                log_error "GCS upload failed: ${GCLOUD_OUT}"
             fi
         else
             rm -f "${LOG_FILE}"
