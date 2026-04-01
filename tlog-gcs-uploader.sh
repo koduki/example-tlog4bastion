@@ -38,48 +38,30 @@ cleanup_and_upload() {
     if [ "${UP_PROCESSING}" = "true" ]; then return; fi
     export UP_PROCESSING="true"
 
-    if [ -f "${LOG_FILE}" ]; then
-        # ファイルが空でないことを確認
-        if [ -s "${LOG_FILE}" ]; then
-            # GCSへの転送を試行
-            # セッション終了時の確実な出力を期待し、タイムアウトやバックグラウンド実行も考慮可能
-            /usr/bin/gsutil cp "${LOG_FILE}" "${GCS_BUCKET}/${USER_NAME}/" > /dev/null 2>&1
-            
-            if [ $? -eq 0 ]; then
-                # 成功した場合は一時ファイルを削除
-                rm -f "${LOG_FILE}"
-            else
-                log_error "GCS upload failed on exit for ${LOG_FILE}"
-            fi
-        else
+    # ★ここが重要:
+    # SIGHUP/SIGTERMのハンドラ内では、子プロセス(gsutil)にも同じシグナルが
+    # 届いてアップロードが中断されてしまう。
+    # ハンドラ内でシグナルを無視することでgsutilを保護する。
+    trap '' HUP TERM
+
+    if [ -f "${LOG_FILE}" ] && [ -s "${LOG_FILE}" ]; then
+        /usr/bin/gsutil cp "${LOG_FILE}" "${GCS_BUCKET}/${USER_NAME}/" > /dev/null 2>&1
+        if [ $? -eq 0 ]; then
             rm -f "${LOG_FILE}"
+        else
+            log_error "GCS upload failed on exit for ${LOG_FILE}"
         fi
+    else
+        rm -f "${LOG_FILE}"
     fi
 }
 
-# 未アップロードの古いログがあれば再送する
-resend_pending_logs() {
-    # 自分のユーザー名で始まる既存のログファイルを検索
-    # 現在のセッションのログファイル以外を対象とする
-    for f in "${LOCAL_TMP_DIR}/${USER_NAME}_"*.log; do
-        if [ -f "$f" ] && [ "$f" != "${LOG_FILE}" ]; then
-            # 別のプロセスで書き込み中でないか（極めて簡易的なチェック）
-            # lsofが使えない場合も考慮し、単にバックグラウンドで転送を試みる
-            (
-                /usr/bin/gsutil cp "$f" "${GCS_BUCKET}/${USER_NAME}/" && rm -f "$f"
-            ) > /dev/null 2>&1 &
-        fi
-    done
-}
-
-# 終了シグナルを確実にトラップ（EXITに加え、HUP, TERMも明示）
+# セッション切断(SIGHUP)・強制終了(SIGTERM)・通常終了(EXIT)をすべて検知してアップロード
 trap cleanup_and_upload EXIT HUP TERM
 
 # =================================================================
 # 4. セッション記録の開始
 # =================================================================
-# ログイン時に未アップロードのログがあればバックグラウンドで処理
-resend_pending_logs
 
 # 本来のシェルの特定
 REAL_SHELL=$(getent passwd "${USER_NAME}" | cut -d: -f7)
