@@ -25,7 +25,7 @@ log_error() {
 # =================================================================
 # 2. 事前準備
 # =================================================================
-if; then
+if [ ! -d "${LOCAL_TMP_DIR}" ]; then
     mkdir -p "${LOCAL_TMP_DIR}"
     chmod 1733 "${LOCAL_TMP_DIR}" # スティッキービットを立て、他人のログを消せないようにする
 fi
@@ -60,10 +60,10 @@ trap cleanup_and_upload EXIT
 # =================================================================
 # 本来のシェルの特定
 REAL_SHELL=$(getent passwd "${USER_NAME}" | cut -d: -f7)
- && REAL_SHELL="/bin/bash"
+[ -z "${REAL_SHELL}" ] && REAL_SHELL="/bin/bash"
 
 # 非対話型実行(scp等)の考慮
-if; then
+if [ -n "${SSH_ORIGINAL_COMMAND}" ]; then
     # scpやrsync等の場合は記録せずに直接実行（バイナリデータの破損を防ぐため）
     # 必要に応じて、ここをtlog-rec -cに変更することも可能だが注意が必要
     exec "${REAL_SHELL}" -c "${SSH_ORIGINAL_COMMAND}"
