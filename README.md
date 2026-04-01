@@ -1,94 +1,108 @@
-# Tlog GCS Uploader for Bastion Server
+# Tlog GCS Uploader for Bastion Server 🚀
 
-`tlog` を使用して、Google Compute Engine (GCE) 踏み台サーバー上の全セッション操作（標準入出力）を記録し、ログを直接 Google Cloud Storage (GCS) へ保存するためのソリューションです。
-
-## 🚀 特徴
-
-- **自動記録**: SSHログインと同時に `tlog-rec` が起動し、全操作を JSON 形式で記録。
-- **堅牢な転送**: ターミナルのクローズボタンによる切断やタイムアウト（`SIGHUP`, `SIGTERM`）時も `trap` を介して確実にアップロード。
-- **自動リカバリ**: 万が一転送に失敗しても、次回ログイン時に未送信ログを自動的にバックグラウンドで再送。
-- **直接転送**: セッション終了時にログを直接 GCS へ保存。監査証跡の完全性を確保し、サーバー上からは自動削除。
-- **高信頼性**: `gsutil` を採用し、Rocky Linux 8 等の環境で安定動作。
+`tlog` を使用して、Google Compute Engine (GCE) 踏み台サーバー上の全セッション操作（標準入出力）を記録し、ログを直接 Google Cloud Storage (GCS) へ保存するための堅牢なソリューションです。
 
 ---
 
-## 📋 前提条件
+## 💡 特徴
+
+- **自動セッション記録**: SSH ログイン時に `tlog-rec` が自動起動し、全操作を JSON 形式でキャプチャ。
+- **高信頼な転送 (Signal Trapping)**: ブラウザを閉じた場合やタイムアウト（`SIGHUP`, `SIGTERM`, `EXIT`）でも、ログを確実に GCS へアップロード。
+- **インテリジェント・リカバリ**: 万が一の転送失敗時も、次回ログイン時に未送信ログをバックグラウンドで自動再送。
+- **ストレージ最適化**: セッション終了時にログを直接 GCS へ移行。サーバー上のログは自動削除され、ディスク圧迫を防ぎます。
+- **運用フレンドリー**: 動作状況は syslog (`journalctl`) でリアルタイム監視可能。デバッグモードも完備。
+- **安全なデプロイ**: `sshd -t` によるバリデーションを含む専用デプロイスクリプトを提供。
+
+---
+
+## 🛠 ワークフロー
+
+```mermaid
+graph TD
+    A[SSH Login] --> B[tlog-gcs-uploader.sh 起動]
+    B --> C[tlog-rec 開始]
+    C --> D{セッション終了}
+    D -->|正常終了/切断/timeout| E[Trap 発火]
+    E --> F[gsutil で GCS へアップロード]
+    F --> G{成功?}
+    G -->|Yes| H[ローカルログ削除]
+    G -->|No| I[ログを保持し次回再送]
+    H --> J[セッション終了]
+    I --> J
+```
+
+---
+
+## 📋 導入の準備 (Prerequisites)
 
 ### 1. 対象 OS
 - **Rocky Linux 8** (Google Optimized 推奨)
+- その他 `tlog` 及び `google-cloud-cli` が利用可能な Linux 環境
 
-### 2. GCP 権限 (IAM)
-GCE インスタンスのサービスアカウントに対し、以下のロールを付与したバケットへのアクセス権が必要です。
-- `roles/storage.objectCreator` (ストレージ オブジェクト作成者)
-- `roles/storage.legacyBucketReader` (ストレージ レガシー バケット読み取り)
+### 2. GCP 権限 & スコープ
+インスタンスのサービスアカウントには以下が必要です。
 
-### 3. アクセススコープ (重要)
-GCE インスタンスの設定で、以下のいずれかの **アクセススコープ** が有効である必要があります。
-- 「すべての Cloud API に完全なアクセス権を許可」 (`cloud-platform`)
-- 「ストレージ: 読み書き」 (`devstorage.read_write`)
+| 項目 | 必要な設定 |
+| :--- | :--- |
+| **IAM ロール** | `Storage オブジェクト作成者`, `Storage レガシー バケット読み取り` |
+| **アクセススコープ** | `すべての Cloud API に完全なアクセス権を許可` または `ストレージ: 読み書き` |
 
-> [!IMPORTANT]
-> アクセススコープが「既定（ストレージが読み取り専用）」の場合、IAM権限が正しくてもアップロードに失敗します。
+> [!CAUTION]
+> アクセススコープが「既定」の場合、書き込み権限不足でアップロードに失敗します。
 
 ---
 
-## 📦 インストールと設定
+## 🚀 クイックスタート
 
-### 1. 依存パッケージの導入
+### ステップ 1: 依存パッケージのインストール
 ```bash
 sudo dnf update -y
 sudo dnf install -y tlog google-cloud-cli
 ```
 
-### 2. スクリプトの配置と設定
-`tlog-gcs-uploader.sh` 内の `GCS_BUCKET` 変数を、ご自身のバケット名（例: `gs://YOUR_BUCKET_NAME`）に書き換えてください。
+### ステップ 2: スクリプトの設定
+`tlog-gcs-uploader.sh` の 12 行目付近にある `GCS_BUCKET` を自身のバケット名に書き換えます。
 
-### 3. デプロイの実行
+```bash
+readonly GCS_BUCKET="gs://YOUR_BUCKET_NAME"
+```
+
+### ステップ 3: デプロイ
+スクリプトに実行権限を与え、デプロイを実行します。
+
 ```bash
 chmod +x deploy.sh
 sudo ./deploy.sh
 ```
-
-`deploy.sh` は以下の処理を行います：
-- スクリプトの配置 (`/usr/local/bin/`)
-- `sshd_config` への `ForceCommand` 適用
-- ログ用一時ディレクトリの作成と権限設定 (`1733` スティッキービット)
-- `sshd -t` による設定ファイルのバリデーション
-- `sshd` の自動再起動
+※ `deploy.sh` はスクリプトの配置、SSHD 設定の適用、設定の検証、SSHD の再起動までをワンストップで行います。
 
 ---
 
-## 🛠️ 運用と監査
+## 🔍 運用とトラブルシューティング
+
+### 動作ログの確認
+動作の詳細は `journalctl` でリアルタイムに監視できます。
+
+- **エラーの監視**: `journalctl -t tlog-gcs-uploader -p err -f`
+- **詳細ログ (Debug)**: `journalctl -t tlog-gcs-uploader -p debug -f`
 
 ### ログの再生
-監査時に GCS からログをダウンロードし、`tlog-play` を使用して内容を再現できます。
+監査時は GCS からログを取得し、`tlog-play` で内容を確認できます。
 
 ```bash
-# ログの取得
-gsutil cp gs://YOUR_BUCKET_NAME/<user>/<file> ./
+# GCS から DL
+gsutil cp gs://YOUR_BUCKET_NAME/<user_name>/<file_name>.log ./
 
-# ターミナル操作の再現
-tlog-play --reader=file --file-path=<file>
+# 再生
+tlog-play --reader=file --file-path=<file_name>.log
 ```
 
-### アップロード失敗時のリカバリ
-ネットワーク不通などで GCS への転送に失敗したログは `/var/log/tlog-sessions/` に残ります。以下のコマンドで再試行可能です。
-
-```bash
-# 失敗ログの再アップロード
-gsutil cp /var/log/tlog-sessions/*.log gs://YOUR_BUCKET_NAME/retry/ && rm -f /var/log/tlog-sessions/*.log
-```
+### よくある問題
+- **ログイン直後に切断される**: `tlog` がインストールされているか、または GCS への疎通（スコープ）を確認してください。
+- **アップロードされない**: `journalctl` でエラーコードを確認してください。多くの場合、認証かバケット名の設定ミスです。
 
 ---
 
-## 🔍 トラブルシューティング
-
-### ログイン直後にセッションが終了する
-- `tlog` がインストールされているか確認してください。
-- インスタンスのアクセススコープが「読み書き」以上になっているか確認してください。
-- `journalctl -t tlog-gcs-uploader -p err` でエラー内容を確認してください。
-- デバッグログを確認する場合は `journalctl -t tlog-gcs-uploader -p debug` を使用してください。
-
-### GCS へのアップロードが失敗する
-- `gsutil cp` を手動で実行し、エラーメッセージを確認してください。
-- `Provided scope(s) are not authorized.` と出る場合は、インスタンスを停止してアクセススコープを `cloud-platform` に変更してください。
+## 📚 関連情報
+- [詳細な構築手順書 (manuals.md)](./docs/manuals.md)
+- [tlog 公式ドキュメント](https://github.com/Scribery/tlog)
